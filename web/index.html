@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BTCUSDT PERP · MATCHING ENGINE OBSERVER</title>
 <link rel="icon" href="data:,">
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="./style.css">
 </head>
 <body>
 <div class="app">
@@ -26,7 +26,8 @@
     </div>
     <div class="topbar-right">
       <span class="badge badge-observed" title="Everything in this panel is measured from real WebSocket data">OBSERVED</span>
-      <a class="link" href="/api/status" target="_blank" rel="noopener">/api/status</a>
+      <!-- The /api/status link is injected by app.js in server mode only: the
+           static build has no backend, so a hardcoded link would 404. -->
     </div>
   </header>
 
@@ -91,7 +92,7 @@
     <aside class="col col-left">
 
       <section class="panel panel-counter">
-        <h2 class="panel-title">EVENTS OBSERVED <span class="tag tag-observed">REAL · SERVER SIDE</span></h2>
+        <h2 class="panel-title">EVENTS OBSERVED <span class="tag tag-observed" id="counter-scope">REAL · SERVER SIDE</span></h2>
         <div class="counter-value" id="counter-total">0</div>
         <div class="counter-grid">
           <div><i>SESSION</i><b id="counter-session">00:00:00</b></div>
@@ -250,6 +251,7 @@
           <span>SAMPLES <b id="ia-samples">0</b></span>
         </div>
         <div class="ia-note" id="ia-note"></div>
+        <div class="ia-note warn" id="ia-resolution-warn" hidden></div>
       </section>
 
       <section class="panel panel-latency">
@@ -284,6 +286,10 @@
             applied to the book, serialised. Measured with
             <code>process.hrtime.bigint()</code> on the server, not in the browser.
           </div>
+        </div>
+        <div class="lat-block">
+          <div class="lat-head">TIMING SOURCE</div>
+          <div class="lat-note" id="timing-source">—</div>
         </div>
         <div class="lat-block">
           <div class="lat-head">SERVER EVENT LOOP LAG</div>
@@ -367,6 +373,6 @@
     </div>
   </footer>
 </div>
-<script type="module" src="/app.js"></script>
+<script type="module" src="./app.js"></script>
 </body>
 </html>

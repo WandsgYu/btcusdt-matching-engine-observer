@@ -4,8 +4,9 @@
  * Two distinct time bases are used, and mixing them up would quietly destroy
  * the meaning of every latency number in the UI:
  *
- *  - MONOTONIC (process.hrtime.bigint) is the only source used for durations:
- *    inter-arrival gaps, processing latency.  It can never jump backwards.
+ *  - MONOTONIC is the only source used for durations: inter-arrival gaps,
+ *    processing latency.  It can never jump backwards.  Backed by
+ *    `process.hrtime.bigint()` in Node and `performance.now()` in a browser.
  *
  *  - WALL (Date.now) is only used to express "when did this happen in civil
  *    time" so that it can be compared with Binance's exchange timestamp.
@@ -16,19 +17,21 @@
  * derived wall clock cannot drift away from civil time over a long session.
  */
 
-const T0_MONO_NS = process.hrtime.bigint();
+import { nowNs, timeoutSignal } from '../shared/runtime.js';
 
-/** Nanoseconds since process start (monotonic). */
+const T0_MONO_NS = nowNs();
+
+/** Nanoseconds from a monotonic clock. */
 export function monoNs() {
-  return process.hrtime.bigint();
+  return nowNs();
 }
 
-/** Microseconds since process start (monotonic, sub-microsecond float). */
+/** Microseconds since start (monotonic, sub-microsecond float). */
 export function monoUs() {
-  return Number(process.hrtime.bigint() - T0_MONO_NS) / 1000;
+  return Number(nowNs() - T0_MONO_NS) / 1000;
 }
 
-let anchorMonoNs = process.hrtime.bigint();
+let anchorMonoNs = nowNs();
 let anchorWallMs = Date.now();
 
 /**
@@ -37,7 +40,7 @@ let anchorWallMs = Date.now();
  */
 let lastWallMs = 0;
 export function wallMsHiRes() {
-  const nowMono = process.hrtime.bigint();
+  const nowMono = nowNs();
   let v = anchorWallMs + Number(nowMono - anchorMonoNs) / 1e6;
   if (v < lastWallMs) v = lastWallMs;
   lastWallMs = v;
@@ -48,12 +51,12 @@ export function wallMsHiRes() {
 export function resyncWallAnchor() {
   const before = wallMsHiRes();
   anchorWallMs = Date.now();
-  anchorMonoNs = process.hrtime.bigint();
+  anchorMonoNs = nowNs();
   lastWallMs = 0;
   return anchorWallMs - before;
 }
 
-/** Wall clock milliseconds, integer (for display of "now"). */
+/** Wall clock milliseconds, integer. */
 export function wallMs() {
   return Date.now();
 }
@@ -70,8 +73,9 @@ export function startMonoNs() {
  * This is a *measurement of our own clock*, not of Binance's internals.  It is
  * needed because `exchange -> local` latency computed from timestamps is
  * contaminated by clock skew: if our clock is 40 ms behind, every latency
- * reading is inflated by 40 ms.  Reporting the estimate lets the reader judge
- * the number instead of trusting it blindly.
+ * reading is inflated by 40 ms.  Reporting the estimate - and its uncertainty,
+ * which is half the round trip - lets the reader judge the number instead of
+ * trusting it blindly.
  *
  * Uses the NTP-style midpoint estimator over a REST round trip:
  *     offset ~= serverTime - (t_send + t_recv) / 2
@@ -83,7 +87,6 @@ export const clockOffset = {
   offsetMs: NaN,
   /** Round trip time of the best sample, milliseconds. */
   rttMs: NaN,
-  /** Number of probes attempted / succeeded. */
   attempts: 0,
   successes: 0,
   lastProbeWallMs: 0,
@@ -91,13 +94,11 @@ export const clockOffset = {
   history: [],
 };
 
-export async function probeClockOffset(fetchImpl = fetch) {
+export async function probeClockOffset(fetchImpl = fetch, base = 'https://fapi.binance.com') {
   clockOffset.attempts++;
   const t0 = wallMsHiRes();
   try {
-    const res = await fetchImpl('https://fapi.binance.com/fapi/v1/time', {
-      signal: AbortSignal.timeout(5000),
-    });
+    const res = await fetchImpl(`${base}/fapi/v1/time`, { signal: timeoutSignal(5000) });
     const t1 = wallMsHiRes();
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = await res.json();

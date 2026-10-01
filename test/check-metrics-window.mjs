@@ -6,7 +6,7 @@
  * silently overflow the Int32Array the stamps live in - every comparison would
  * fail and every window sum would reset the buckets it read.
  */
-import { Metrics } from '../server/metrics.mjs';
+import { Metrics } from '../core/metrics.mjs';
 
 const m = new Metrics();
 const t0 = 1790837000000;

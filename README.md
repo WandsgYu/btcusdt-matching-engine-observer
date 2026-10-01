@@ -1,185 +1,171 @@
-# BTCUSDT PERP · MATCHING ENGINE OBSERVER
+# BTCUSDT 永续合约撮合引擎实时观察器
 
-A real-time observer for the Binance USDⓈ-M **BTCUSDT perpetual futures** market.
+一个观察 Binance USDⓈ-M **BTCUSDT 永续合约**市场的实时工具。
 
-It is not a price terminal. It exists to make three things visible:
+它不是行情终端。它想让三件事被看见：
 
-1. **How much is actually happening.** A live event firehose at the true arrival
-   rate — a few thousand normalized events per second — not a sampled or
-   smoothed summary.
-2. **That a matching system is a deterministic serial state machine.** Pause,
-   then advance one event at a time and watch the order book change
-   `event N → book state N`, `event N+1 → book state N+1`.
-3. **That a millisecond is a coarse unit of time.** Slow the playhead to
-   1/1000 and one real millisecond of market activity takes a second to watch.
+1. **后台到底有多忙。** 事件流按真实到达速率喷出，每秒数千条归一化事件，不做采样也不做平滑。
+2. **撮合系统是一个确定性的串行状态机。** 暂停后逐条推进，看订单簿随 `事件 N → 簿状态 N`、`事件 N+1 → 簿状态 N+1` 变化。
+3. **毫秒已经是很粗的时间尺度。** 慢放到 1/1000 时，现实世界 1 毫秒的市场活动要花 1 秒看完。
 
 ---
 
-## Quick start
+## 两种运行方式
+
+同一套流水线代码，两种宿主。与宿主无关的模块放在 `core/`，Node 和浏览器都能跑。
+
+| | Node 服务端 | 静态站点（GitHub Pages） |
+|---|---|---|
+| 地址 | `http://127.0.0.1:8787` | <https://wandsgyu.github.io/btcusdt-matching-engine-observer/> |
+| 数据通路 | 浏览器 ← HTTP ← Node ← Binance | 浏览器 Worker → Binance |
+| 时钟精度 | `process.hrtime.bigint()`，纳秒 | `performance.now()`，实测 5 µs 并显示在界面上 |
+| 环形缓冲 | SharedArrayBuffer，零拷贝 | 同上（靠 Service Worker 拿到跨源隔离） |
+| 录制 | 写入 `recordings/*.binlog` 磁盘文件 | 仅内存，刷新即丢失 |
+| 适用场景 | 长时间运行、需要留存录制 | 分享链接，打开就能看 |
+
+两种模式功能相同：事件流、定序器、订单簿、时间膨胀、暂停单步、录制回放全都在。
+
+**静态站点有三个前提**，都得说清楚：
+
+- **浏览器必须能直连 Binance。** 部分地区会被网络层挡掉，那样页面连不上行情。这不是代码问题，换网络或改用本地服务端模式。
+- **首次访问会自动刷新一次。** 为了注册 Service Worker 拿到跨源隔离（COOP/COEP）。GitHub Pages 没法自己发这两个响应头，而拿不到隔离时 Chrome 会把 `performance.now()` 钳到 **100 µs**——那样直方图里 `<100 µs` 那几档就是在测量浏览器定时器，不是在测市场。隔离之后精度回到 5 µs，`SharedArrayBuffer` 也可用，恢复零拷贝环形缓冲。只刷新一次，用 sessionStorage 记着，不会循环。
+- **录制只在内存里。** 没有文件系统，刷新页面录制就没了。
+
+---
+
+## 快速开始
 
 ```bash
-node server/index.mjs          # or: npm start
+node server/index.mjs          # 或 npm start
 open http://127.0.0.1:8787
 ```
 
-Requires Node 22+ (uses the built-in WebSocket client and `fetch`).
-**Zero runtime dependencies.** Nothing to install, nothing to build.
+需要 Node 22+（用到内置 WebSocket 客户端和 `fetch`）。**零运行时依赖**，不用安装，不用构建。
 
-Options (environment variables):
+环境变量：
 
-| Variable | Default | Meaning |
+| 变量 | 默认 | 含义 |
 |---|---|---|
-| `PORT` | `8787` | HTTP port |
-| `HOST` | `127.0.0.1` | bind address |
-| `METRICS_HZ` | `10` | how often the server pushes aggregate metrics |
+| `PORT` | `8787` | HTTP 端口 |
+| `HOST` | `127.0.0.1` | 绑定地址 |
+| `METRICS_HZ` | `10` | 聚合指标推送频率 |
 
-Ring size is a URL parameter: `?ring=2097152` for a 2M-event ring (176 MiB),
-`?ring=262144` for 256K (22 MiB). Default is 1M events (88 MiB).
+环形缓冲大小是 URL 参数：`?ring=2097152` 是 2M 事件（176 MiB），`?ring=262144` 是 256K（22 MiB）。默认 1M 事件（88 MiB）。
+
+想在本地试静态模式不用部署：`http://127.0.0.1:8787/?mode=standalone`。这条路径和 Pages 上跑的是同一份代码。
+
+生成静态构建：`node tools/build-pages.mjs`，输出到 `dist/`。
 
 ---
 
-## Architecture
+## 架构
 
 ```
-                    Binance USDⓈ-M futures WebSocket
+                    Binance USDⓈ-M 期货 WebSocket
              btcusdt@depth@0ms · @trade · @bookTicker · @markPrice@1s
                                   │
                          ┌────────▼────────┐
-                         │  feed.mjs       │  timestamps captured as the FIRST
-                         │  (ingress)      │  statement of the message callback
+                         │  feed           │  时间戳在消息回调第一行取
                          └────────┬────────┘
-                                  │ raw frame + recvMonoUs + recvWallMs + bytes
+                                  │ 原始帧 + recvMonoUs + recvWallMs + 字节数
                          ┌────────▼────────┐
-                         │  ingress buffer │  held while the book is not provably
-                         │                 │  in sync; replayed in arrival order
-                         └────────┬────────┘
-                         ┌────────▼────────┐
-                         │  normalizer     │  JSON → 88-byte typed records
-                         │                 │  depthUpdate expands per price level
+                         │  ingress buffer │  订单簿未能证明同步时暂存，
+                         │                 │  之后按到达顺序回放
                          └────────┬────────┘
                          ┌────────▼────────┐
-                         │  sequencer      │  monotonic local serial per event
+                         │  normalizer     │  JSON → 88 字节定长记录
+                         │                 │  depthUpdate 按价位展开
                          └────────┬────────┘
                          ┌────────▼────────┐
-                         │  orderbook.mjs  │  L2 state machine, validated against
-                         │                 │  the exchange's own `pu` hash chain
+                         │  sequencer      │  每个事件一个单调本地序号
                          └────────┬────────┘
                          ┌────────▼────────┐
-                         │  metrics.mjs    │  sliding windows, exact percentiles,
-                         │                 │  inter-arrival histogram, bursts
+                         │  orderbook      │  L2 状态机，用交易所自己的
+                         │                 │  pu 哈希链校验
+                         └────────┬────────┘
+                         ┌────────▼────────┐
+                         │  metrics        │  滑动窗口、精确分位数、
+                         │                 │  到达间隔直方图、爆发检测
                          └────────┬────────┘
                     ┌─────────────┴─────────────┐
-                    │                           │
            ┌────────▼────────┐         ┌────────▼────────┐
-           │  .binlog        │         │  HTTP chunked   │  binary frames,
-           │  recorder       │         │  /api/stream    │  backpressure-aware
+           │  .binlog 录制   │         │  帧输出         │  HTTP 分块流，
+           │  （仅服务端）    │         │                 │  感知背压
            └─────────────────┘         └────────┬────────┘
                                                 │
-                         ═══════ process boundary ═══════
-                                                │
                                     ┌───────────▼───────────┐
-                                    │  worker.js            │  fetch reader +
-                                    │  (ingest worker)      │  binary decode
+                                    │  ingest worker        │  读流 + 二进制解码
+                                    │                       │  静态模式下跑整条流水线
                                     └───────────┬───────────┘
-                                                │ SharedArrayBuffer ring
-                                                │ (Atomics cursor, zero copy)
+                                                │ SharedArrayBuffer 环形缓冲
+                                                │ （Atomics 游标，零拷贝）
                                     ┌───────────▼───────────┐
-                                    │  app.js               │  playback cursor +
-                                    │  (render, 60 fps)     │  canvas painting
+                                    │  app.js               │  播放游标 +
+                                    │  渲染，60 fps          │  Canvas 绘制
                                     └───────────────────────┘
 ```
 
-**Data processing and rendering are fully decoupled.** The server never waits on
-the browser, and the browser never blocks the ingest path: the worker writes
-records into a `SharedArrayBuffer` ring and the render loop reads it. A slow
-frame costs a frame — it cannot cost an event.
+**数据处理和渲染彻底解耦。** 服务端不等浏览器，浏览器也不阻塞接收路径：Worker 把记录写进 `SharedArrayBuffer` 环形缓冲，渲染循环只读。掉一帧的代价是一帧，不会是一个事件。
 
-The invariant that makes single-stepping real:
+让单步推进有意义的那个不变量：
 
-> Every `DEPTH` record that leaves the pipeline was applied to the authoritative
-> book *before* it was emitted, and records leave in exactly the order they were
-> applied.
+> 每一条离开流水线的 `DEPTH` 记录，在发射之前就已经应用到了权威订单簿，而且发射顺序等于应用顺序。
 
-The browser mirrors the same transitions, so the mirrored book at cursor `N` is
-the book the server's state machine held after event `N` — during start-up,
-during a resync, and during replay alike.
+浏览器镜像同样的状态转移，所以游标 `N` 处的镜像订单簿就是服务端状态机执行完事件 `N` 后的订单簿——启动阶段、重同步、回放，全程成立。
 
 ---
 
-## What is measured, and how
+## 观测到什么，怎么测的
 
-Everything numeric on screen traces to a real WebSocket frame.
+屏幕上每个数字都能追溯到真实的 WebSocket 帧。
 
-| Quantity | Source | Notes |
+| 量 | 来源 | 说明 |
 |---|---|---|
-| Local receive time | `process.hrtime.bigint()` at socket callback entry | monotonic; **all durations** use this base |
-| Wall-clock receive time | `Date.now()` interpolated against the monotonic clock | sub-ms resolution, monotonic, re-anchored every 30 s |
-| Exchange event time | Binance `E` / `T` fields | never regenerated on the client |
-| Processing latency | monotonic µs from callback entry to records emitted | includes `JSON.parse`, `pu`-chain validation, book application |
-| Inter-arrival | differences of monotonic timestamps | two separate processes tracked: raw WS messages, and normalized events |
-| Percentiles | exact sort of the last 8192 samples | not a histogram approximation |
-| Window rates | 50 ms buckets, 60 s of history | windows are bucket-quantized at 50 ms |
-| WS bytes | length of each frame off the socket | ASCII payloads, so length == bytes |
-| Book state | REST snapshot + `pu`-chained diffs | chain breaks are detected, counted and resynchronized |
+| 本地接收时刻 | socket 回调入口处的 `process.hrtime.bigint()` | 单调时钟；**所有时长**都用这个基准 |
+| 墙钟接收时刻 | `Date.now()` 用单调时钟插值 | 亚毫秒分辨率，单调，每 30 秒重新对锚 |
+| 交易所事件时刻 | Binance 的 `E` / `T` 字段 | 客户端从不重新生成 |
+| 处理延迟 | 从回调入口到记录发射的单调微秒 | 含 `JSON.parse`、`pu` 链校验、订单簿应用 |
+| 到达间隔 | 单调时间戳之差 | 分开跟踪两个不同的过程：原始 WS 消息、归一化事件 |
+| 分位数 | 最近 8192 个样本精确排序 | 不是直方图近似 |
+| 窗口速率 | 50 ms 分桶，60 秒历史 | 窗口按 50 ms 量化 |
+| WS 字节 | 每个帧的实际长度 | 载荷是 ASCII，长度即字节数 |
+| 订单簿 | REST 快照 + `pu` 链增量 | 链断会被检测、计数并重同步 |
 
-Two different inter-arrival processes are tracked because they are genuinely
-different things:
+到达间隔分开跟踪两个过程，因为它们本来就是两回事：
 
-* **WS MESSAGE** — one sample per message from Binance. The true arrival process
-  at this machine.
-* **NORMALIZED EVENT** — one sample per event after depth expansion. A single
-  `depthUpdate` carrying 70 changed levels becomes 70 sub-100 µs events. Those
-  tiny gaps are the *expansion*, not the network.
+- **WS 消息** —— 每条 Binance 消息一个样本，这才是到达本机的真实过程。
+- **归一化事件** —— 深度展开之后每事件一个样本。一条携带 70 个价位变化的 `depthUpdate` 会变成 70 个间隔小于 100 µs 的事件。那些极小的间隔是**展开**造成的，不是网络。
 
-### What is deliberately not claimed
+### 明确不声称的东西
 
-**Not observable from any public API**, and therefore never shown as fact:
-Binance's internal sequencer queue depth, matching-engine latency, CPU
-utilisation, gateway backlog, or any internal message rate.
+**任何公开 API 都拿不到、因此从不当作事实展示的**：Binance 内部的 sequencer 队列深度、撮合引擎延迟、CPU 占用、网关积压、内部消息速率。
 
-The `SEQUENCER` panel shows this machine's local state machine and says so on
-the panel. Queue depth there is *our* ingress-minus-committed depth, which is a
-real, observable quantity — and it grows visibly when you slow the playhead
-down, which is the entire point of the TIME DILATION experiment.
+`SEQUENCER` 面板展示的是本机的局部状态机，面板上也是这么写的。那里的队列深度是**本机**的「已接收减去已提交」，这是一个真实可观测的量——把播放头放慢时它会明显涨起来，这正是时间膨胀实验要展示的东西。
 
-There is an optional overlay, **off by default**, that models a hypothetical
-single-threaded engine. When enabled it prints its own formula and is badged
-`SIMULATED — NOT BINANCE TELEMETRY`. It is never mixed into the observed panels.
+有一个可选的内部模型叠加层，**默认关闭**，打开时自带公式，并标注 `SIMULATED — NOT BINANCE TELEMETRY`，从不混进观测面板。
 
-`EXCHANGE → LOCAL` latency includes network transit, Binance's push mechanism
-and **clock skew**. The skew is measured against Binance's server clock over
-REST and displayed, along with its uncertainty (± ½ RTT), together with an
-offset-corrected estimate. On a long-haul link that correction is large and the
-uncertainty is large with it; the panel says so rather than picking the flattering
-number.
+`EXCHANGE → LOCAL` 包含网络传输、Binance 推送机制和**时钟偏差**。偏差通过 REST 对 Binance 服务器时钟测得并显示，同时显示它的不确定度（±½RTT）和校正后的估计值。长链路上这个校正很大，不确定度也很大，面板如实说明，而不是挑一个好看的数字。
 
-`SERVER EVENT LOOP LAG` is displayed next to the latency figures on purpose: if
-this machine stalls, every processing-latency number measured around the stall
-is contaminated, and the panel says which case you are in.
+`SERVER EVENT LOOP LAG` 特意和延迟数字放在一起：本机若发生停顿，停顿前后测出的所有处理延迟都被污染，面板会指出当前属于哪种情况。
+
+`TIMING SOURCE` 单独一块，显示时间戳来自哪个时钟、实测分辨率是多少。静态构建里这个数字是 5 µs；如果浏览器拒绝隔离，就会变成 100 µs，直方图旁边会亮出警告，说明最小那几档只是分辨率上界。
 
 ---
 
-## The three experiments
+## 三个实验
 
-### 1 · EVENT FIREHOSE
+### 1 · 事件流
 
-The centre column is the live event stream, painted on canvas and batched into
-`requestAnimationFrame`. At realtime it scrolls far faster than it can be read —
-that is the correct outcome, and it is the honest one: roughly 1,000–4,000
-normalized events per second on a normal BTCUSDT tape, spiking higher during
-bursts.
+中栏是实时事件流，画在 Canvas 上，按 `requestAnimationFrame` 批处理。实时状态下它滚得远比人能读得快——这是正确结果，也是诚实的结果：BTCUSDT 正常盘口大约每秒 1,000–4,000 条归一化事件，爆发时更高。
 
-Additions to the stream that would be dishonest are surfaced instead:
+可能造成误导的地方是主动暴露而不是隐藏：
 
-* `drawn` / `received` — if a catch-up frame has to skip formatting lines that
-  would be off-screen anyway, the count of skipped lines is displayed.
-* `scrolled past` — same counter, named for what it is.
+- `drawn` / `received` —— 追赶帧里那些本来就滚出屏幕、无需格式化的行会被跳过，跳过多少条照实显示。
+- `scrolled past` —— 同一个计数，名字就是它的含义。
 
-### 2 · PAUSE + STEP — the serial state machine
+### 2 · 暂停 + 单步：串行状态机
 
-Press `PAUSE`, then `STEP` (or `→`). Each click advances the sequencer by
-**exactly one event**, and the order book, the `PROCESSING` panel and the
-waterfall all move with it:
+按 `PAUSE`，再按 `STEP`（或 `→`）。每次点击让定序器**恰好**前进一个事件，订单簿、`PROCESSING` 面板、瀑布流一起走：
 
 ```
 91827361 → DONE
@@ -189,148 +175,122 @@ waterfall all move with it:
 91827365 → WAIT
 ```
 
-Serials beyond the ingress head are shown dimmed: the sequencer assigns serials
-densely, so they are projected rather than received.
+超出已接收范围的序号显示为暗色：定序器分配的序号是稠密的（每发射一个事件加一），所以那些是**预测**值，不是已收到的。
 
-One detail worth knowing: a single `depthUpdate` message expands into ~70 level
-events that all share the same exchange update id `u`. So stepping changes the
-book state on nearly every click while `lastUpdateId` only moves once per
-message. Both numbers are on screen so the difference is visible.
+有个细节值得知道：一条 `depthUpdate` 消息展开成约 70 个价位事件，它们共享同一个交易所更新号 `u`。所以每次单步几乎都会改变簿状态，而 `lastUpdateId` 每条消息才动一次。两个数字都在屏幕上，差别看得见。
 
-### 3 · TIME DILATION
+### 3 · 时间膨胀
 
-| Control | Meaning |
+| 控件 | 含义 |
 |---|---|
-| `REALTIME` | playhead pinned to the newest event |
-| `10× / 100× / 1000× SLOWER` | market time advances at 1/10, 1/100, 1/1000 of wall time |
+| `REALTIME` | 播放头钉在最新事件上 |
+| `10× / 100× / 1000× SLOWER` | 市场时间按 1/10、1/100、1/1000 的速率前进 |
 
-At `1000× SLOWER`, one real millisecond of market activity takes one second to
-watch. Live data continues to arrive and be recorded at full speed the whole
-time — only the playhead slows. `LAG` shows how far behind the live edge you
-are, and `QUEUE` shows the local backlog growing in real time.
+选 `1000× SLOWER` 时，现实世界 1 毫秒的市场活动要花 1 秒看完。整个过程中实时数据照常全速接收和记录，只有播放头变慢。`LAG` 显示落后实时边缘多少，`QUEUE` 显示本机积压实时增长。
 
-The playback rate and the dilation multiply: `EFFECTIVE` in the bottom bar
-always shows the single resulting number, so the two controls can never be read
-as contradicting each other.
+播放速率和时间膨胀是相乘的，底栏的 `EFFECTIVE` 始终显示两者合出来的那一个数，所以这两个控件不可能被读成互相矛盾。
 
 ---
 
-## RECORD + REPLAY
+## 录制与回放
 
-`● REC` writes `recordings/*.binlog` — the **unmodified live frame stream**,
-byte for byte, preceded by one metadata frame and a full book snapshot.
+`● REC` 写入 `recordings/*.binlog`——**未经修改的实时帧流**，逐字节相同，前面加一帧元数据和一整份订单簿快照。
 
-That has a useful consequence: replay is not a re-synthesis of the market. It is
-the identical byte stream that was captured, carrying the original exchange
-timestamps, the original local receive timestamps, and the processing latencies
-that were actually measured at capture time. Verified by
-`npm test` (check T6c: every replayed record is compared field by field against
-the live record with the same local serial).
+这带来一个有用的性质：回放不是对市场的重新合成，而是当时捕获的同一串字节，带着原始的交易所时间戳、原始的本地接收时间戳、以及捕获时真实测得的处理延迟。`npm test` 会验证这一点（T6c：每条回放记录按本地序号与实时记录逐字段比对）。
 
-Because a recording begins with a book snapshot, stepping through a replay
-reconstructs exactly the book states that were live at capture time.
+因为录制以订单簿快照开头，在回放里单步走，重建出来的就是捕获时真实的簿状态。
 
-Pick a file and press `▶ LOAD`. Live events keep being received and recorded
-while the display follows the replay segment; `RETURN TO LIVE` re-seeds from a
-fresh snapshot and states plainly that events arriving during the replay were
-skipped for that client.
+选一个文件按 `▶ LOAD`。实时事件仍在接收和录制，只是显示跟随回放段；`RETURN TO LIVE` 会用一份新快照重新播种，并明说回放期间到达的事件对该客户端被跳过了。
+
+静态构建下录制只在内存里，回放同样可用，刷新页面后消失。
 
 ---
 
-## Keyboard
+## 快捷键
 
-| Key | Action |
+| 键 | 动作 |
 |---|---|
-| `Space` | pause / resume |
-| `→` | single step |
-| `1` `2` `3` | 1× / 0.1× / 0.01× playback |
+| `Space` | 暂停 / 继续 |
+| `→` | 单步 |
+| `1` `2` `3` | 1× / 0.1× / 0.01× 播放速率 |
 
-The console/automation handle is at `window.__observer` (`state`, `book`,
-`step`, `seekTo`, `returnToLive`, `ringInfo`).
+控制台和自动化句柄在 `window.__observer`（`state`、`book`、`step`、`seekTo`、`returnToLive`、`ringInfo`）。
 
 ---
 
-## Verifying it
+## 验证
 
 ```bash
-node server/index.mjs &        # needs a running observer
-npm test                       # 13 end-to-end checks against the live feed
-npm run test:metrics           # sliding-window bucketing
-npm run test:recording         # composition of the newest recording
-npm run probe                  # which Binance streams actually deliver, and how bursty
+node server/index.mjs &        # 需要一个运行中的服务端
+npm test                       # 对实时行情跑 14 项端到端检查
+npm run test:metrics           # 滑动窗口分桶
+npm run test:recording         # 最新录制的内容构成
+npm run probe                  # Binance 哪些流真的在推、到达有多突发
 ```
 
-`npm test` connects to the running observer, consumes the real binary stream and
-checks the properties the whole project rests on:
+`npm test` 连上运行中的服务端，消费真实的二进制流，检查整个项目赖以成立的性质：
 
-| Check | Property |
+| 检查 | 性质 |
 |---|---|
-| T1 | every event frame is self-consistent |
-| T2 | local sequencer serials strictly increase |
-| T3 | the client's top of book **equals the server's authoritative book** at a shared update id |
-| T3b | the full 20-level book is exact when the server's current id is shared |
-| T4 | zero `pu`-chain breaks observed |
-| T5 | event density and byte rate are those of the real venue |
-| T6 | a recording replays into byte-identical records with original timestamps |
+| T1 | 每个事件帧自洽 |
+| T2 | 本地定序器序号严格递增 |
+| T3 | 客户端盘口**等于**服务端权威订单簿（同一更新号） |
+| T3b | 服务端当前更新号可共享时，完整 20 档精确一致 |
+| T4 | 未观测到 `pu` 链断裂 |
+| T5 | 事件密度和字节速率就是真实交易所的量级 |
+| T6 | 录制回放出的记录逐字节相同，时间戳保持原样 |
 
-`npm run shot -- --url http://127.0.0.1:8787 --out shot.png` drives headless
-Chrome over the DevTools Protocol (no dependencies) and reports any page
-exception, so the UI can be checked rather than assumed.
+`npm run shot -- --url http://127.0.0.1:8787 --out shot.png` 通过 DevTools 协议驱动无头 Chrome（无依赖），并报告任何页面异常，所以界面是被检查过的，不是被假设的。
 
 ---
 
-## Findings
+## 调试中发现的问题
 
-Things this tool surfaced that were not obvious going in.
+这些是做的过程中撞出来的、事先不明显的东西。
 
-**The arrival process is extremely bursty, and 100 ms is a long time.**
-Messages arrive in tight clusters — the median inter-arrival gap is around
-60 µs — separated by silences with a long tail: p99 ≈ 73 ms, and gaps of
-**709 ms** were measured. About 1.1 % of gaps exceed 100 ms, which is why the
-100 ms rate window legitimately reads zero several times a minute while the 1 s
-window reads 1,500/s. That is not a dropped sample; it is the shape of the data.
+**到达过程极度突发，100 ms 已经很长。** 消息成簇到达，间隔中位数约 60 µs，簇之间是长尾静默：p99 ≈ 73 ms，实测到 **709 ms** 的空档。约 1.1% 的间隔超过 100 ms，所以 100 ms 窗口每分钟会有几次合法地读到 0，而 1 s 窗口读到 1,500/s。这不是丢样本，这是数据的形状。
 
-**Binance emits non-economic trade messages.** BTCUSDT perp periodically sends
-`{"e":"trade","p":"0","q":"0","X":"NA"}` — price zero, quantity zero. Counting
-these as trades inflates TRADES/SEC and a zero poisons any reference price
-derived from "last trade", which silently corrupted burst price-movement
-figures before it was caught. They are now filtered and counted separately
-(`non-economic trade markers` in the DATA INTEGRITY panel).
+**Binance 会发没有经济含义的成交消息。** BTCUSDT 永续会周期性发 `{"e":"trade","p":"0","q":"0","X":"NA"}`——价格零、数量零。把它们当成交会抬高 TRADES/SEC，而那个零会污染任何以「最新成交价」为基准的东西，在被发现之前已经悄悄毁掉了爆发检测的价格变动统计。现在它们被过滤并单独计数（完整性面板里的 `non-economic trade markers`）。
 
-**A snapshot race can silently disable the entire depth stream.** If the REST
-depth snapshot returns faster than the first `depthUpdate` arrives, every
-buffered event is already *ahead* of the snapshot. Since `pu` only ever
-increases, the bridging event can never arrive — and a naive implementation
-ignores every depth update for the rest of the session while the socket stays
-healthy and trades keep flowing. `installSnapshot()` therefore validates that
-the retained buffer can actually bridge the snapshot, and keeps the buffer and
-refetches when it cannot. This is what the `holes` and `stale snapshots
-refetched` counters report.
+**一个快照竞态能让整条深度流静默失效。** 如果 REST 深度快照返回得比第一条 `depthUpdate` 还快，缓冲区里的事件就全部在快照**之后**。而 `pu` 只增不减，桥接事件永远不会再来——天真的实现会在此后整个会话里忽略每一条深度更新，而 socket 看起来完全健康、成交照常流动。所以 `installSnapshot()` 会先验证保留下来的缓冲区确实能桥接这份快照，不能就保留缓冲区重新拉取。完整性面板里的 `holes` 和 `stale snapshots refetched` 就是在报这件事。
+
+**指标计算曾经在测自己。** 每 10 Hz 的指标帧要对 4 个 8192 样本环排序再扫直方图，一次同步阻塞 2–3 ms，正好卡在 WebSocket 接收路径上，于是处理延迟的 p95 被自己测成了 3,534 µs。改成增量直方图加节流排序后，p95 降到约 112 µs。
+
+**静态托管会让浏览器时钟粗 20 倍。** 从 Node 服务端加载时 `performance.now()` 分辨率是 5 µs；换成普通静态托管（没有 COOP/COEP）立刻变成 100 µs，直方图最小档位全部量化成 0 或 100。用 Service Worker 补齐响应头拿到跨源隔离后回到 5 µs。这件事本身就说明了这个工具存在的理由：不测一下，你不会知道自己在测什么。
 
 ---
 
-## Layout
+## 目录结构
 
 ```
-server/
-  index.mjs       HTTP, static files, chunked binary stream, record/replay API
-  pipeline.mjs    ingress buffer → normalizer → sequencer → book → metrics → frames
-  feed.mjs        Binance WebSocket, arrival timestamps, reconnect, idle watchdog
-  orderbook.mjs   L2 state machine with pu-chain validation and resync
-  metrics.mjs     sliding windows, exact percentiles, burst detector, clock offset
-  recorder.mjs    .binlog writer/reader (async, cached listing)
-  clock.mjs       monotonic base, sub-ms wall clock, exchange clock-offset probe
-shared/
-  protocol.js     wire format: 88-byte records, frame layout (server + browser)
+core/            与宿主无关的流水线，Node 和浏览器共用
+  pipeline.mjs     入口缓冲 → 归一化 → 定序 → 订单簿 → 指标 → 帧
+  feed.mjs         Binance WebSocket、到达时间戳、重连、空闲看门狗
+  orderbook.mjs    L2 状态机，pu 链校验与重同步
+  metrics.mjs      滑动窗口、精确分位数、爆发检测、时钟偏差
+  clock.mjs        单调基准、亚毫秒墙钟、交易所时钟偏差探测
+server/          仅 Node 宿主
+  index.mjs        HTTP、静态文件、分块二进制流、录制/回放 API
+  recorder.mjs     .binlog 读写（异步、带缓存）
+shared/          两侧共用
+  protocol.js      线格式：88 字节记录、帧布局
+  emitter.js       最小事件发射器
+  runtime.js       宿主差异：单调时钟、批调度、超时信号、时钟分辨率实测
+  metrics-payload.js  10 Hz 指标 JSON
 web/
-  index.html      panel structure
-  style.css       dark instrument styling
-  app.js          playback cursor, book mirror, canvas renderers, controls
-  worker.js       ingest worker: fetch reader + binary decode
-  decode.js       frame decoder (shared by worker and main thread)
-  ring.js         typed-array event ring (SharedArrayBuffer or ArrayBuffer)
+  index.html       面板结构
+  style.css        深色仪表盘样式
+  app.js           播放游标、订单簿镜像、Canvas 渲染、控件
+  worker.js        接收 Worker：服务端模式读流，静态模式跑整条流水线
+  coi-serviceworker.js  静态托管下补齐 COOP/COEP
+  decode.js        帧解码器
+  ring.js          typed array 事件环形缓冲
 test/
-  run.mjs         end-to-end checks against the live feed
+  run.mjs                对实时行情的端到端检查
+  check-metrics-window.mjs
+  check-recording.mjs
+  probe-feed.mjs
 tools/
-  screenshot.mjs  headless-Chrome capture + page-exception reporting
+  build-pages.mjs  组装静态构建
+  screenshot.mjs   无头 Chrome 截图 + 页面异常报告
 ```

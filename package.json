@@ -13,6 +13,8 @@
     "test:metrics": "node test/check-metrics-window.mjs",
     "test:recording": "node test/check-recording.mjs",
     "probe": "node test/probe-feed.mjs",
-    "shot": "node tools/screenshot.mjs"
+    "shot": "node tools/screenshot.mjs",
+    "build:pages": "node tools/build-pages.mjs",
+    "start:standalone": "echo \"open http://127.0.0.1:8787/?mode=standalone\""
   }
 }

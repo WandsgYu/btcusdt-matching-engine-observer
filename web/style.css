@@ -84,13 +84,14 @@ button, select, input { font-family: var(--mono); }
 
 .strip {
   display: grid;
-  grid-template-columns: 1.5fr repeat(7, 1fr);
+  grid-template-columns: minmax(0, 1.5fr) repeat(7, minmax(0, 1fr));
+  overflow: hidden;
   gap: 1px;
   background: var(--line-soft);
   border-bottom: 1px solid var(--line);
 }
 
-.metric { background: var(--panel); padding: 6px 10px 7px; min-width: 0; }
+.metric { background: var(--panel); padding: 6px 10px 7px; min-width: 0; overflow: hidden; }
 .metric-lead { background: #0d131c; }
 
 .metric-label {
@@ -348,7 +349,9 @@ button, select, input { font-family: var(--mono); }
 .lat-corrected b { color: var(--amber); }
 .lat-corrected i { font-style: normal; color: var(--dimmer); }
 .lat-note.ok { color: var(--bid); }
+.lat-note.warn { color: var(--amber); }
 .lat-note.bad { color: var(--ask); }
+.ia-note.warn { color: var(--amber); border-top: 1px dashed #4a3a17; padding-top: 3px; }
 
 /* ──────────────────────────────── bursts ────────────────────────────────── */
 

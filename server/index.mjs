@@ -23,14 +23,16 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Pipeline } from './pipeline.mjs';
+import { Pipeline } from '../core/pipeline.mjs';
 import { Recorder } from './recorder.mjs';
 import { CONTROL, encodeControl } from '../shared/protocol.js';
+import { buildMetricsPayload } from '../shared/metrics-payload.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const WEB_DIR = path.join(ROOT, 'web');
 const SHARED_DIR = path.join(ROOT, 'shared');
+const CORE_DIR = path.join(ROOT, 'core');
 const REC_DIR = path.join(ROOT, 'recordings');
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -149,74 +151,13 @@ pipeline.on('frames', (frame) => {
 
 let metricsSeq = 0;
 
-/** Round numbers so the 10 Hz JSON payload stays small. */
-function tidy(v, depth) {
-  if (v === null || v === undefined) return v;
-  if (typeof v === 'number') {
-    if (!Number.isFinite(v)) return null;
-    const r = Math.round(v * 1000) / 1000;
-    return Object.is(r, -0) ? 0 : r;
-  }
-  if (Array.isArray(v)) {
-    if (depth > 3) return v.length;
-    return v.map((x) => tidy(x, depth + 1));
-  }
-  if (typeof v === 'object') {
-    if (depth > 3) return undefined;
-    const out = {};
-    for (const k in v) {
-      const t = tidy(v[k], depth + 1);
-      if (t !== undefined) out[k] = t;
-    }
-    return out;
-  }
-  return v;
-}
-
 function metricsPayload() {
-  const st = pipeline.status();
-  return tidy({
+  return buildMetricsPayload(pipeline, {
     seq: ++metricsSeq,
-    serverWallMs: Date.now(),
-    ...st.metrics,
-    feed: {
-      state: st.feed.state,
-      reconnects: st.feed.reconnects,
-      attempts: st.feed.attempts,
-      lastError: st.feed.lastError,
-      streams: st.feed.streams,
-    },
-    integrity: {
-      armed: st.armed,
-      bookSynced: st.synced,
-      bookBids: st.book.bids,
-      bookAsks: st.book.asks,
-      lastUpdateId: st.book.lastUpdateId,
-      applied: st.book.stats.applied,
-      discardedStale: st.book.stats.discardedStale,
-      gaps: st.book.stats.gaps,
-      holes: st.book.stats.holes,
-      resyncs: st.book.stats.resyncs,
-      syncMisses: st.sequencer.syncMisses,
-      replayedFrames: st.sequencer.replayedFrames,
-      insertions: st.book.stats.insertions,
-      deletions: st.book.stats.deletions,
-      bufferedFrames: st.sequencer.bufferedFrames,
-      depthDiscards: st.sequencer.depthDiscards,
-      unknownMessages: st.sequencer.unknownMessages,
-      markersFiltered: st.metrics ? st.metrics.counters.markers : 0,
-      snapshotPending: st.snapshot.pending,
-      snapshotAttempts: st.snapshot.attempts,
-      snapshotResyncs: st.snapshot.resyncs,
-      snapshotRttMs: st.snapshot.lastRttMs,
-      snapshotError: st.snapshot.lastError,
-    },
-    clock: st.clock,
-    loopLag: st.loopLag,
     recorder: recorder.state(),
-    sequencer: { seq: st.sequencer.seq, framesSent: st.framesSent, recordsSent: st.recordsSent },
-    log: serverLog.slice(0, 6),
-  }, 0);
+    clients: [...clients],
+    log: serverLog,
+  });
 }
 
 setInterval(() => {
@@ -410,6 +351,8 @@ function openStream(req, res) {
     serverStartedAt: pipeline.metrics.sessionStartWallMs,
     recordBytes: 88,
     protocolVersion: 1,
+    timingSource: 'process.hrtime.bigint() on the server',
+    timingResolutionUs: 0.001,
     serverNote:
       'Event timing is measured on the server with a monotonic clock (process.hrtime.bigint). Timestamps are never regenerated on the client.',
   });
@@ -504,6 +447,9 @@ const server = http.createServer(async (req, res) => {
 
   if (p === '/' || p === '/index.html') return serveStatic(res, WEB_DIR, 'index.html');
   if (p.startsWith('/shared/')) return serveStatic(res, SHARED_DIR, p.slice('/shared/'.length));
+  // The host-agnostic pipeline is served too: the page's worker imports it
+  // directly when running in standalone (in-browser) mode.
+  if (p.startsWith('/core/')) return serveStatic(res, CORE_DIR, p.slice('/core/'.length));
   return serveStatic(res, WEB_DIR, p.slice(1));
 });
 

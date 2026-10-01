@@ -20,7 +20,7 @@
 
 import {
   KIND, KIND_FIREHOSE, SIDE, FLAG, RECORD_BYTES,
-} from '/shared/protocol.js';
+} from './shared/protocol.js';
 import { EventRing, DEFAULT_CAPACITY } from './ring.js';
 import { decodeChunk, joinChunks } from './decode.js';
 
@@ -28,6 +28,60 @@ import { decodeChunk, joinChunks } from './decode.js';
 
 const params = new URLSearchParams(location.search);
 const RING_CAPACITY = Math.max(1 << 14, Number(params.get('ring')) || DEFAULT_CAPACITY);
+
+/**
+ * Two ways to run the same observer:
+ *
+ *   server      a Node process ingests Binance and streams binary frames over
+ *               HTTP.  Needed for disk recordings.
+ *   standalone  the whole pipeline runs inside this page's worker, connected to
+ *               Binance directly.  This is what makes the app deployable as a
+ *               static site; recordings live in memory instead of on disk.
+ *
+ * The build injects the flag for the Pages bundle; `?mode=standalone` forces it
+ * locally, which is how the static path is tested without deploying.
+ */
+const STANDALONE = window.__OBSERVER_STANDALONE__ === true || params.get('mode') === 'standalone';
+
+/**
+ * In the static build, ask a service worker to make this page cross-origin
+ * isolated.  Without it Chrome clamps `performance.now()` to ~100 us, which is
+ * coarse enough to swallow the sub-100 us bins of the inter-arrival histogram,
+ * and SharedArrayBuffer stays unavailable so the worker must copy every frame.
+ * GitHub Pages cannot send COOP/COEP itself; a service worker can.
+ *
+ * Reloads at most once per session, so a browser that refuses to isolate us
+ * cannot put the page in a reload loop.
+ */
+const COI_RELOAD_FLAG = 'observer-coi-reloaded';
+
+function enableCrossOriginIsolation() {
+  if (crossOriginIsolated) return;
+  if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
+  navigator.serviceWorker
+    .register('./coi-serviceworker.js', { scope: './' })
+    .then((reg) => {
+      if (navigator.serviceWorker.controller) return;
+      if (sessionStorage.getItem(COI_RELOAD_FLAG)) return;
+      const reload = () => {
+        sessionStorage.setItem(COI_RELOAD_FLAG, '1');
+        location.reload();
+      };
+      const sw = reg.installing || reg.waiting || reg.active;
+      if (!sw) return;
+      if (sw.state === 'activated') reload();
+      else sw.addEventListener('statechange', () => {
+        if (sw.state === 'activated') reload();
+      });
+    })
+    .catch(() => {
+      /* no isolation available; the app runs correctly, just coarser */
+    });
+}
+
+const workerParams = new URLSearchParams(location.search);
+if (STANDALONE) workerParams.set('mode', 'standalone');
+const WORKER_URL = './worker.js?' + workerParams.toString();
 
 const S = {
   ring: null,
@@ -200,7 +254,7 @@ function surface(id, font) {
 
 /* ══════════════════════════ stream + ring wiring ════════════════════════ */
 
-const worker = new Worker('/worker.js' + location.search, { type: 'module' });
+const worker = new Worker(WORKER_URL, { type: 'module' });
 
 worker.onerror = (err) => {
   // A dead ingest worker means no data at all; say so instead of showing a
@@ -231,9 +285,17 @@ worker.onmessage = (ev) => {
       } else {
         S.ring = new EventRing(m.capacity, { shared: false });
       }
-      $('ingest-mode').textContent = m.shared
-        ? `SHARED RING · ${(m.capacity / 1024).toFixed(0)}K`
-        : `TRANSFER · ${(m.capacity / 1024).toFixed(0)}K`;
+      $('ingest-mode').textContent = m.standalone
+        ? `IN-BROWSER PIPELINE · ${m.shared ? 'SHARED RING' : 'TRANSFER'} · ${(m.capacity / 1024).toFixed(0)}K`
+        : m.shared
+          ? `SHARED RING · ${(m.capacity / 1024).toFixed(0)}K`
+          : `TRANSFER · ${(m.capacity / 1024).toFixed(0)}K`;
+      if (m.standalone) {
+        document.body.classList.add('standalone');
+        const link = document.querySelector('.topbar-right .link');
+        if (link) link.hidden = true;
+        $('rec-state').textContent = 'static build: recordings are in memory only';
+      }
       $('ig-caps').textContent = fmtInt(m.capacity);
       break;
     case 'control':
@@ -246,6 +308,12 @@ worker.onmessage = (ev) => {
       if (m.state === 'streaming') setText('feed-state', 'STREAM OPEN', 'st-open');
       else if (m.state === 'reconnecting') setText('feed-state', 'RECONNECTING', 'st-wait');
       else if (m.state === 'error') setText('feed-state', 'STREAM ERROR', 'st-bad');
+      break;
+    case 'recordings':
+      S.recordings = m.list || [];
+      S.recState = m.state || S.recState;
+      renderRecordings();
+      renderRecState();
       break;
     case 'chunk': {
       // Fallback mode: this thread owns the ring and does the decode.
@@ -273,6 +341,20 @@ function handleControl(msg, ringIndex) {
     case 'hello':
       S.hello = msg;
       S.clientId = msg.clientId;
+      if (msg.standalone) {
+        document.body.classList.add('standalone');
+        setText('counter-scope', 'REAL \u00b7 THIS BROWSER', 'tag tag-observed');
+      } else {
+        // Only the Node host has an /api/status endpoint.
+        const link = document.createElement('a');
+        link.className = 'link';
+        link.href = './api/status';
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.textContent = '/api/status';
+        document.querySelector('.topbar-right')?.appendChild(link);
+      }
+      renderTimingSource();
       break;
     case 'metrics':
       S.metrics = msg;
@@ -1121,7 +1203,7 @@ function renderMetrics() {
   $('counter-peak').textContent = fmtCompact(m.peak.events1s);
   $('counter-now').textContent = fmtCompact(r.events.w1s);
   $('counter-breakdown').innerHTML =
-    `<b>server-side count since server start</b> · depth levels ${fmtInt(m.counters.depthLevels)} · ` +
+    `<b>${STANDALONE ? 'counted in this browser since page load' : 'server-side count since server start'}</b> · depth levels ${fmtInt(m.counters.depthLevels)} · ` +
     `trades ${fmtInt(m.counters.trades)} · bookTickers ${fmtInt(m.counters.bookTickers)} · ` +
     `depth msgs ${fmtInt(m.counters.depthMsgs)} · buy ${fmtInt(m.counters.buyTrades)} / sell ${fmtInt(m.counters.sellTrades)}` +
     (m.counters.markers ? ` · ${fmtInt(m.counters.markers)} non-economic trade markers filtered` : '');
@@ -1146,6 +1228,7 @@ function renderMetrics() {
   const corr = off !== null && Number.isFinite(L.exchangeToLocal.p50) ? L.exchangeToLocal.p50 - off : null;
   $('lat-corrected').textContent = corr === null ? '—' : fmtMs(corr);
 
+  renderTimingSource();
   const ll = m.loopLag;
   if (ll) {
     setNum('lag-p50', `${ll.p50Ms.toFixed(2)} ms`);
@@ -1238,6 +1321,39 @@ function renderMetrics() {
   renderSimModel(m);
 
   updateUptime(m);
+}
+
+/**
+ * Which clock the timestamps came from, and how fine it actually is.
+ *
+ * In the static build the pipeline timestamps events with the browser's
+ * `performance.now()`, which browsers deliberately coarsen. If that resolution
+ * is not far below the histogram's smallest bin, the sub-100 us bins are
+ * measuring the timer rather than the market, and the UI has to say so.
+ */
+function renderTimingSource() {
+  const h = S.hello;
+  const el = $('timing-source');
+  if (!el) return;
+  if (!h) {
+    el.textContent = '—';
+    return;
+  }
+  const res = h.timingResolutionUs;
+  const resTxt = res == null ? 'unknown' : res < 1 ? `${(res * 1000).toFixed(0)} ns` : `${res.toFixed(res < 10 ? 1 : 0)} \u00b5s`;
+  el.innerHTML = `${escapeHtml(h.timingSource || 'unknown')} &middot; resolution ${resTxt}`;
+  el.className = res != null && res > 100 ? 'bad' : res != null && res > 10 ? 'warn' : 'ok';
+
+  const coarse = res != null && res > 10;
+  const note = $('ia-resolution-warn');
+  if (note) {
+    note.hidden = !coarse;
+    if (coarse) {
+      note.textContent =
+        `Timer resolution here is ~${res.toFixed(0)} \u00b5s, so gaps below that are quantised: ` +
+        'treat the smallest histogram bins as an upper bound on resolution rather than a measurement.';
+    }
+  }
 }
 
 function updateUptime(m) {
@@ -1496,8 +1612,12 @@ function renderRecState() {
 }
 
 async function loadRecordings() {
+  if (STANDALONE) {
+    worker.postMessage({ type: 'list-recordings' });
+    return;
+  }
   try {
-    const r = await fetch('/api/recordings', { cache: 'no-store' });
+    const r = await fetch('./api/recordings', { cache: 'no-store' });
     const j = await r.json();
     S.recordings = j.recordings || [];
     S.recState = j.state || S.recState;
@@ -1574,7 +1694,11 @@ $('sim-toggle').onchange = (e) => {
 
 $('btn-record').onclick = async () => {
   const recording = S.recState && S.recState.recording;
-  await fetch('/api/record', {
+  if (STANDALONE) {
+    worker.postMessage(recording ? { type: 'record-stop' } : { type: 'record', seconds: 30 });
+    return;
+  }
+  await fetch('./api/record', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(recording ? { action: 'stop' } : { action: 'start', seconds: 30 }),
@@ -1585,11 +1709,15 @@ $('btn-record').onclick = async () => {
 $('btn-replay').onclick = async () => {
   const file = $('replay-select').value;
   if (!file) return;
+  if (STANDALONE) {
+    worker.postMessage({ type: 'replay', file });
+    return;
+  }
   if (!S.clientId) {
     alert('stream not connected yet');
     return;
   }
-  const res = await fetch('/api/replay', {
+  const res = await fetch('./api/replay', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ action: 'start', file, clientId: S.clientId }),
@@ -1675,18 +1803,22 @@ window.__observer = {
   ringInfo: () => ({ head: S.ring.writeIndex, capacity: S.ring.capacity, shared: S.shared, cursor: S.cursor }),
 };
 
+if (STANDALONE) enableCrossOriginIsolation();
+
 renderRecordings();
 loadRecordings();
 setInterval(loadRecordings, 5000);
 syncTransportUi();
 requestAnimationFrame(frame);
 
-fetch('/api/status', { cache: 'no-store' })
-  .then((r) => r.json())
-  .then((j) => {
-    if (j && j.feed) {
-      setText('feed-state', j.feed.state === 'open' ? 'OPEN' : String(j.feed.state).toUpperCase(),
-        j.feed.state === 'open' ? 'st-open' : 'st-wait');
-    }
-  })
-  .catch(() => {});
+if (!STANDALONE) {
+  fetch('./api/status', { cache: 'no-store' })
+    .then((r) => r.json())
+    .then((j) => {
+      if (j && j.feed) {
+        setText('feed-state', j.feed.state === 'open' ? 'OPEN' : String(j.feed.state).toUpperCase(),
+          j.feed.state === 'open' ? 'st-open' : 'st-wait');
+      }
+    })
+    .catch(() => {});
+}

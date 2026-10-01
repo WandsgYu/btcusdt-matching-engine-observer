@@ -23,7 +23,8 @@
  * installed, so a resync never reorders history or leaks a partial book.
  */
 
-import { EventEmitter } from 'node:events';
+import { Emitter } from '../shared/emitter.js';
+import { scheduleBatch, timeoutSignal } from '../shared/runtime.js';
 import { BinanceFeed, DEFAULT_STREAMS } from './feed.mjs';
 import { OrderBook } from './orderbook.mjs';
 import { Metrics } from './metrics.mjs';
@@ -40,14 +41,23 @@ import {
 const SNAPSHOT_DEPTH = 1000;
 const MAX_INGRESS = 20000;
 
-export class Pipeline extends EventEmitter {
-  constructor({ symbol = 'BTCUSDT', streams = DEFAULT_STREAMS, depthLimit = SNAPSHOT_DEPTH } = {}) {
+export class Pipeline extends Emitter {
+  constructor({
+    symbol = 'BTCUSDT',
+    streams = DEFAULT_STREAMS,
+    depthLimit = SNAPSHOT_DEPTH,
+    restBase = 'https://fapi.binance.com',
+    urlBase = undefined,
+    clockProbeIntervalMs = 30000,
+  } = {}) {
     super();
     this.symbol = symbol;
     this.depthLimit = depthLimit;
+    this.restBase = restBase;
+    this.clockProbeIntervalMs = clockProbeIntervalMs;
     this.book = new OrderBook();
     this.metrics = new Metrics();
-    this.feed = new BinanceFeed({ streams, symbol });
+    this.feed = new BinanceFeed({ streams, symbol, ...(urlBase ? { urlBase } : {}) });
 
     /** Monotonic local event serial. This is the sequencer's event number. */
     this.seq = 0;
@@ -120,11 +130,17 @@ export class Pipeline extends EventEmitter {
     this._ticks = setInterval(() => this.tick(), 50);
     this._lagTimer = setInterval(() => this.sampleLoopLag(), 50);
     this._lagExpected = monoUs() + 50000;
-    this._clockTimer = setInterval(() => {
-      resyncWallAnchor();
-      probeClockOffset();
-    }, 30000);
-    probeClockOffset();
+    if (this.clockProbeIntervalMs > 0) {
+      this._clockTimer = setInterval(() => {
+        resyncWallAnchor();
+        probeClockOffset(fetch, this.restBase);
+      }, this.clockProbeIntervalMs);
+      probeClockOffset(fetch, this.restBase);
+    } else {
+      // A static deployment still needs a wall-clock anchor; it just does not
+      // need to keep asking Binance what time it is.
+      this._clockTimer = setInterval(() => resyncWallAnchor(), 30000);
+    }
     return this;
   }
 
@@ -132,6 +148,7 @@ export class Pipeline extends EventEmitter {
     clearInterval(this._ticks);
     clearInterval(this._clockTimer);
     clearInterval(this._lagTimer);
+    if (this._clockTimer) clearInterval(this._clockTimer);
     this.feed.stop();
   }
 
@@ -430,8 +447,8 @@ export class Pipeline extends EventEmitter {
     const t0 = monoUs();
     try {
       const res = await fetch(
-        `https://fapi.binance.com/fapi/v1/depth?symbol=${this.symbol}&limit=${this.depthLimit}`,
-        { signal: AbortSignal.timeout(10000) },
+        `${this.restBase}/fapi/v1/depth?symbol=${this.symbol}&limit=${this.depthLimit}`,
+        { signal: timeoutSignal(10000) },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const snap = await res.json();
@@ -658,7 +675,7 @@ export class Pipeline extends EventEmitter {
     this.recordsSent++;
     if (!this._flushScheduled) {
       this._flushScheduled = true;
-      setImmediate(() => this.flush());
+      scheduleBatch(() => this.flush());
     }
   }
 

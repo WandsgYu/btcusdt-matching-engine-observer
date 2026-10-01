@@ -13,7 +13,7 @@
  *                exchange timestamp.
  */
 
-import { EventEmitter } from 'node:events';
+import { Emitter } from '../shared/emitter.js';
 import { monoUs, wallMsHiRes } from './clock.mjs';
 
 export const DEFAULT_STREAMS = Object.freeze([
@@ -23,11 +23,12 @@ export const DEFAULT_STREAMS = Object.freeze([
   'btcusdt@markPrice@1s',
 ]);
 
-const WS_BASE = 'wss://fstream.binance.com/stream?streams=';
+export const WS_BASE = 'wss://fstream.binance.com/stream?streams=';
 
-export class BinanceFeed extends EventEmitter {
-  constructor({ streams = DEFAULT_STREAMS, symbol = 'BTCUSDT', idleTimeoutMs = 45000 } = {}) {
+export class BinanceFeed extends Emitter {
+  constructor({ streams = DEFAULT_STREAMS, symbol = 'BTCUSDT', idleTimeoutMs = 45000, urlBase = WS_BASE } = {}) {
     super();
+    this.urlBase = urlBase;
     this.streams = [...streams];
     this.symbol = symbol;
     this.idleTimeoutMs = idleTimeoutMs;
@@ -46,7 +47,7 @@ export class BinanceFeed extends EventEmitter {
   }
 
   get url() {
-    return WS_BASE + this.streams.join('/');
+    return this.urlBase + this.streams.join('/');
   }
 
   start() {

@@ -7,7 +7,7 @@
  * bytes it consumed and lets the caller keep the remainder.
  */
 
-import { FRAME, RECORD_BYTES } from '/shared/protocol.js';
+import { FRAME, RECORD_BYTES } from './shared/protocol.js';
 
 const decoder = new TextDecoder();
 
