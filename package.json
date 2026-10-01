@@ -1,0 +1,18 @@
+{
+  "name": "btcusdt-matching-engine-observer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Real-time BTCUSDT perpetual futures matching-engine observer. Zero runtime dependencies.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server/index.mjs",
+    "test": "node test/run.mjs",
+    "test:metrics": "node test/check-metrics-window.mjs",
+    "test:recording": "node test/check-recording.mjs",
+    "probe": "node test/probe-feed.mjs",
+    "shot": "node tools/screenshot.mjs"
+  }
+}

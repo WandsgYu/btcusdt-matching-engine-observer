@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BTCUSDT PERP · MATCHING ENGINE OBSERVER</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- ══════════════════════════════ HEADER ══════════════════════════════ -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">◈</span>
+      <span class="brand-name">BTCUSDT&nbsp;PERP</span>
+      <span class="brand-sub">MATCHING&nbsp;ENGINE&nbsp;OBSERVER</span>
+    </div>
+    <div class="topbar-facts">
+      <span class="fact"><i>FEED</i><b id="feed-state" class="st-wait">connecting</b></span>
+      <span class="fact"><i>INGEST</i><b id="ingest-mode">…</b></span>
+      <span class="fact"><i>STREAM CLOCK</i><b id="clock-offset">—</b></span>
+      <span class="fact"><i>SERVER UPTIME</i><b id="server-uptime">—</b></span>
+      <span class="fact"><i>BINANCE</i><b id="exchange-clock">—</b></span>
+    </div>
+    <div class="topbar-right">
+      <span class="badge badge-observed" title="Everything in this panel is measured from real WebSocket data">OBSERVED</span>
+      <a class="link" href="/api/status" target="_blank" rel="noopener">/api/status</a>
+    </div>
+  </header>
+
+  <!-- ══════════════════════════ METRICS STRIP ══════════════════════════ -->
+  <section class="strip" aria-label="live market activity metrics">
+    <div class="metric metric-lead">
+      <div class="metric-label">EVENTS / SEC <span class="win">sliding window</span></div>
+      <div class="metric-main"><span id="m-events-1">0</span></div>
+      <div class="metric-wins">
+        <span>100&nbsp;ms <b id="m-events-100">0</b></span>
+        <span>1&nbsp;s <b id="m-events-1b">0</b></span>
+        <span>10&nbsp;s <b id="m-events-10">0</b></span>
+      </div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">DEPTH UPDATES / SEC</div>
+      <div class="metric-main"><span id="m-depthlvl">0</span></div>
+      <div class="metric-wins">
+        <span>msgs <b id="m-depthmsg">0</b></span>
+        <span>levels <b id="m-depthlvl-1">0</b></span>
+      </div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">TRADES / SEC</div>
+      <div class="metric-main"><span id="m-trades">0</span></div>
+      <div class="metric-wins"><span>bookTicker <b id="m-bookticker">0</b>/s</span></div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">BTC TRADED / SEC</div>
+      <div class="metric-main"><span id="m-btc">0</span></div>
+      <div class="metric-wins"><span>cum <b id="m-btc-total">0</b> BTC</span></div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">NOTIONAL / SEC</div>
+      <div class="metric-main"><span id="m-notional">0</span></div>
+      <div class="metric-wins"><span>cum <b id="m-notional-total">0</b></span></div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">BOOK CHANGES / SEC</div>
+      <div class="metric-main"><span id="m-bookchanges">0</span></div>
+      <div class="metric-wins"><span>qty actually moved</span></div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">WS BYTES / SEC</div>
+      <div class="metric-main"><span id="m-wsbytes">0</span></div>
+      <div class="metric-wins">
+        <span><b id="m-wsmsgs">0</b> msgs/s</span>
+        <span>cum <b id="m-wsbytes-total">0</b></span>
+      </div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">BURST INDEX <span class="win">vs trailing median</span></div>
+      <div class="metric-main"><span id="m-burst">1.00×</span></div>
+      <div class="metric-wins"><span>baseline <b id="m-baseline">0</b>/s</span></div>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════ MAIN GRID ═══════════════════════════ -->
+  <main class="grid3">
+
+    <!-- ─────────────────────────── LEFT ─────────────────────────── -->
+    <aside class="col col-left">
+
+      <section class="panel panel-counter">
+        <h2 class="panel-title">EVENTS OBSERVED <span class="tag tag-observed">REAL · SERVER SIDE</span></h2>
+        <div class="counter-value" id="counter-total">0</div>
+        <div class="counter-grid">
+          <div><i>SESSION</i><b id="counter-session">00:00:00</b></div>
+          <div><i>AVERAGE</i><b id="counter-avg">0</b><span>events/sec</span></div>
+          <div><i>PEAK 1 s</i><b id="counter-peak">0</b><span>events/sec</span></div>
+          <div><i>NOW</i><b id="counter-now">0</b><span>events/sec</span></div>
+        </div>
+        <div class="counter-sub">
+          <span id="counter-breakdown">depth 0 · trades 0 · tickers 0</span>
+        </div>
+      </section>
+
+      <section class="panel panel-sequencer">
+        <h2 class="panel-title">
+          SEQUENCER
+          <span class="tag tag-observed">LOCAL · OBSERVED</span>
+        </h2>
+        <div class="pipe">
+          <div class="pipe-row"><span class="pipe-stage">INGRESS</span><b id="seq-ingress">0</b><i>events received</i></div>
+          <div class="pipe-arrow">↓</div>
+          <div class="pipe-row"><span class="pipe-stage">SEQUENCER</span><b id="seq-cursor">0</b><i>committed</i></div>
+          <div class="pipe-arrow">↓</div>
+          <div class="pipe-row"><span class="pipe-stage">MATCHING ENGINE</span><b id="seq-engine">—</b><i>event state machine</i></div>
+          <div class="pipe-arrow">↓</div>
+          <div class="pipe-row"><span class="pipe-stage">BOOK UPDATE</span><b id="seq-book">—</b><i>applied transition</i></div>
+          <div class="pipe-arrow">↓</div>
+          <div class="pipe-row"><span class="pipe-stage">MARKET DATA</span><b id="seq-emitted">—</b><i>firehose + recorder</i></div>
+        </div>
+        <div class="queue-meter">
+          <div class="queue-head">
+            <span>LOCAL PIPELINE QUEUE</span>
+            <b id="seq-queue">0</b>
+          </div>
+          <div class="queue-bar"><div id="seq-queue-fill"></div></div>
+          <div class="queue-note" id="seq-queue-note">depth = ingress − committed</div>
+        </div>
+        <div class="seq-process">
+          <div class="seq-process-head">PROCESSING</div>
+          <div class="seq-process-body">
+            <div class="seq-ev" id="seq-proc-ev">—</div>
+            <div class="seq-ev-detail" id="seq-proc-detail">waiting for events…</div>
+          </div>
+          <div class="seq-process-head next">NEXT</div>
+          <div class="seq-ev next" id="seq-next-ev">—</div>
+        </div>
+        <div class="seq-waterfall-wrap">
+          <canvas id="seq-canvas"></canvas>
+        </div>
+        <div class="notobservable">
+          <b>NOT OBSERVABLE FROM PUBLIC API</b>
+          Binance does not publish internal sequencer queue depth, matching
+          latency, CPU utilisation or gateway backlog. Nothing above is a model:
+          it is this machine's local state machine, and it is labelled as such.
+          <label class="sim-toggle">
+            <input type="checkbox" id="sim-toggle"> overlay a SIMULATED internal model
+          </label>
+          <div class="sim-detail" id="sim-detail" hidden></div>
+        </div>
+      </section>
+    </aside>
+
+    <!-- ─────────────────────────── CENTER ────────────────────────── -->
+    <section class="col col-center">
+
+      <section class="panel panel-firehose">
+        <h2 class="panel-title">
+          EVENT FIREHOSE
+          <span class="tag tag-observed">LIVE · BATCHED 60 FPS</span>
+          <span class="firehose-meta">
+            <span id="fh-drawn">0</span> drawn ·
+            <span id="fh-received">0</span> received ·
+            <span id="fh-persec">0</span>/s
+            <span id="fh-skipped-wrap" hidden>· <span id="fh-skipped">0</span> scrolled past</span>
+          </span>
+        </h2>
+        <div class="canvas-wrap"><canvas id="firehose"></canvas></div>
+      </section>
+
+      <section class="panel panel-charts">
+        <h2 class="panel-title">
+          MARKET ACTIVITY <span class="tag tag-observed">SERIES · 1 s SAMPLES</span>
+          <span class="firehose-meta" id="chart-cursor"></span>
+        </h2>
+        <div class="charts">
+          <div class="chart-box"><canvas id="chart-events"></canvas></div>
+          <div class="chart-box"><canvas id="chart-latency"></canvas></div>
+          <div class="chart-box"><canvas id="chart-spread"></canvas></div>
+          <div class="chart-box"><canvas id="chart-lag"></canvas></div>
+        </div>
+      </section>
+    </section>
+
+    <!-- ─────────────────────────── RIGHT ─────────────────────────── -->
+    <aside class="col col-right">
+
+      <section class="panel panel-book">
+        <h2 class="panel-title">
+          LIVE ORDER BOOK
+          <span class="tag tag-observed">MAINTAINED STATE</span>
+          <span class="firehose-meta"><span id="book-seq">#0</span></span>
+        </h2>
+        <div class="book-head">
+          <div class="book-big">
+            <i>BEST BID</i><b id="book-best-bid" class="bid">—</b>
+          </div>
+          <div class="book-spread">
+            <i>SPREAD</i><b id="book-spread">—</b>
+            <span id="book-spread-bps">—</span>
+          </div>
+          <div class="book-big">
+            <i>BEST ASK</i><b id="book-best-ask" class="ask">—</b>
+          </div>
+        </div>
+        <div class="book-meta">
+          <span>MID <b id="book-mid">—</b></span>
+          <span>LEVELS <b id="book-levels">0</b></span>
+          <span>APPLIED <b id="book-applied">0</b></span>
+          <span>GAPS <b id="book-gaps">0</b></span>
+          <span id="book-sync" class="ok">IN SYNC</span>
+        </div>
+        <div class="canvas-wrap book-canvas"><canvas id="book"></canvas></div>
+        <div class="book-legend">
+          <span class="lg-bid">■ bid depth</span>
+          <span class="lg-ask">■ ask depth</span>
+          <span class="lg-pulse">■ pulse = this level changed &lt;250 ms ago</span>
+        </div>
+      </section>
+
+      <section class="panel panel-bursts">
+        <h2 class="panel-title">
+          BURST DETECTOR
+          <span class="tag tag-observed">REAL EVENTS ONLY</span>
+        </h2>
+        <div id="burst-active" class="burst-active" hidden></div>
+        <div class="burst-list" id="burst-list">
+          <div class="empty">no burst detected yet — waiting for the market to move</div>
+        </div>
+      </section>
+      <section class="panel panel-ia">
+        <h2 class="panel-title">
+          EVENT INTER-ARRIVAL
+          <span class="tag tag-observed">MONOTONIC µs</span>
+        </h2>
+        <div class="ia-switch">
+          <button class="mini-btn active" data-ia="message">WS MESSAGE</button>
+          <button class="mini-btn" data-ia="event">NORMALIZED EVENT</button>
+        </div>
+        <div class="ia-last" id="ia-last"></div>
+        <div class="canvas-wrap ia-canvas"><canvas id="ia-canvas"></canvas></div>
+        <div class="ia-stats">
+          <span>P50 <b id="ia-p50">—</b></span>
+          <span>P95 <b id="ia-p95">—</b></span>
+          <span>P99 <b id="ia-p99">—</b></span>
+          <span>MIN <b id="ia-min">—</b></span>
+          <span>MAX <b id="ia-max">—</b></span>
+          <span>SAMPLES <b id="ia-samples">0</b></span>
+        </div>
+        <div class="ia-note" id="ia-note"></div>
+      </section>
+
+      <section class="panel panel-latency">
+        <h2 class="panel-title">LATENCY <span class="tag tag-observed">MEASURED</span></h2>
+        <div class="lat-block">
+          <div class="lat-head">EXCHANGE → LOCAL</div>
+          <div class="lat-row">
+            <span>P50 <b id="lat-ex-p50">—</b></span>
+            <span>P95 <b id="lat-ex-p95">—</b></span>
+            <span>P99 <b id="lat-ex-p99">—</b></span>
+            <span>MAX <b id="lat-ex-max">—</b></span>
+          </div>
+          <div class="lat-note">
+            Includes network transit, Binance push mechanism and clock skew.
+            This is <b>not</b> Binance matching latency.
+          </div>
+          <div class="lat-corrected">
+            <span>CLOCK OFFSET <b id="lat-offset">—</b> <i id="lat-offset-unc">±?</i></span>
+            <span>OFFSET-CORRECTED <b id="lat-corrected">—</b> <i>estimate</i></span>
+          </div>
+        </div>
+        <div class="lat-block">
+          <div class="lat-head">LOCAL PROCESSING</div>
+          <div class="lat-row">
+            <span>P50 <b id="lat-pr-p50">—</b></span>
+            <span>P95 <b id="lat-pr-p95">—</b></span>
+            <span>P99 <b id="lat-pr-p99">—</b></span>
+            <span>MAX <b id="lat-pr-max">—</b></span>
+          </div>
+          <div class="lat-note">
+            Socket callback → parsed, validated against the <code>pu</code> chain,
+            applied to the book, serialised. Measured with
+            <code>process.hrtime.bigint()</code> on the server, not in the browser.
+          </div>
+        </div>
+        <div class="lat-block">
+          <div class="lat-head">SERVER EVENT LOOP LAG</div>
+          <div class="lat-row">
+            <span>P50 <b id="lag-p50">—</b></span>
+            <span>P99 <b id="lag-p99">—</b></span>
+            <span>MAX <b id="lag-max">—</b></span>
+          </div>
+          <div class="lat-note" id="lag-verdict">
+            Overshoot of a 50 ms timer. This bounds how much the processing
+            latency above can be believed at all.
+          </div>
+        </div>
+      </section>
+
+
+      <section class="panel panel-integrity">
+        <h2 class="panel-title">DATA INTEGRITY <span class="tag tag-observed">VERIFIABLE</span></h2>
+        <div class="kv-grid">
+          <span>pu-chain gaps</span><b id="ig-gaps">0</b>
+          <span>snapshot resyncs</span><b id="ig-resyncs">0</b>
+          <span>stale frames dropped</span><b id="ig-stale">0</b>
+          <span>stale snapshots refetched</span><b id="ig-syncmiss">0</b>
+          <span>non-economic trade markers</span><b id="ig-markers">0</b>
+          <span>bad frames (client)</span><b id="ig-badframes">0</b>
+          <span>records in ring</span><b id="ig-records">0</b>
+          <span>ring capacity</span><b id="ig-caps">0</b>
+          <span>ring overwritten</span><b id="ig-overwritten">0</b>
+          <span>snapshot RTT</span><b id="ig-snaptt">—</b>
+          <span>book levels (server)</span><b id="ig-levels">0</b>
+        </div>
+        <div class="log" id="server-log"></div>
+      </section>
+    </aside>
+  </main>
+
+  <!-- ═══════════════════════════ TRANSPORT ═════════════════════════════ -->
+  <footer class="transport">
+    <div class="tgroup">
+      <span class="tlabel">PLAYBACK</span>
+      <button id="btn-pause" class="btn btn-primary">❚❚ PAUSE</button>
+      <button class="btn rate active" data-rate="1">1×</button>
+      <button class="btn rate" data-rate="0.1">0.1×</button>
+      <button class="btn rate" data-rate="0.01">0.01×</button>
+      <button id="btn-step" class="btn btn-step" disabled>STEP ▸</button>
+    </div>
+
+    <div class="tgroup">
+      <span class="tlabel">TIME DILATION</span>
+      <button class="btn dil active" data-dil="1">REALTIME</button>
+      <button class="btn dil" data-dil="10">10× SLOWER</button>
+      <button class="btn dil" data-dil="100">100× SLOWER</button>
+      <button class="btn dil" data-dil="1000">1000× SLOWER</button>
+    </div>
+
+    <div class="tgroup">
+      <span class="tlabel">SOURCE</span>
+      <span id="source-badge" class="badge badge-live">LIVE</span>
+      <button id="btn-live" class="btn" disabled>RETURN TO LIVE</button>
+    </div>
+
+    <div class="tgroup">
+      <span class="tlabel">RECORD</span>
+      <button id="btn-record" class="btn btn-rec">● REC 30 s</button>
+      <span class="rec-state" id="rec-state">idle</span>
+    </div>
+
+    <div class="tgroup tgroup-replay">
+      <span class="tlabel">REPLAY</span>
+      <select id="replay-select" class="select"><option>loading…</option></select>
+      <button id="btn-replay" class="btn">▶ LOAD</button>
+    </div>
+
+    <div class="tgroup tgroup-view">
+      <span class="tlabel">VIEW</span>
+      <span class="view-stat">EFFECTIVE <b id="view-rate">1×</b></span>
+      <span class="view-stat" title="Playhead position on the captured market timeline. Advances continuously even between events.">MARKET TIME <b id="view-clock">—</b></span>
+      <span class="view-stat" title="Timestamp carried by the most recently executed event.">LAST EVENT <b id="view-event">—</b></span>
+      <span class="view-stat">LAG <b id="view-lag">—</b></span>
+      <span class="view-stat">QUEUE <b id="view-queue">0</b></span>
+    </div>
+  </footer>
+</div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
